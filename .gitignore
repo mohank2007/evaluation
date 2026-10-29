@@ -1,0 +1,12 @@
+backend/data/*
+!backend/data/.gitkeep
+backend/*.log
+backend/server-*.log
+.env
+.env.*
+!.env.example
+node_modules/
+*.key
+*.pem
+*.p12
+

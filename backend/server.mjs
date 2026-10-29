@@ -93,7 +93,7 @@ const schema = {
     paperTotalMarks: { type: ['number', 'null'] },
     selectionRules: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['ruleId', 'part', 'instruction', 'chooseCount', 'questionNumbers'], properties: { ruleId: { type: 'string' }, part: { type: 'string' }, instruction: { type: 'string' }, chooseCount: { type: ['number', 'null'] }, questionNumbers: { type: 'array', items: { type: 'string' } } } } },
     questionMap: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['part', 'questionNumber', 'questionText', 'maxMarks', 'concept', 'questionType'], properties: { part: { type: 'string' }, questionNumber: { type: 'string' }, questionText: { type: 'string' }, maxMarks: { type: ['number', 'null'] }, concept: { type: 'string' }, questionType: { type: ['string', 'null'] }, choiceGroupId: { type: ['string', 'null'] }, choiceAllowedCount: { type: ['number', 'null'] }, isChoice: { type: 'boolean' } } } },
-    students: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['fileName', 'studentName', 'rollNumber', 'questions', 'totalMarks', 'maxMarks', 'confidence', 'needsReview'], properties: { fileName: { type: 'string' }, studentName: { type: ['string', 'null'] }, rollNumber: { type: ['string', 'null'] }, questions: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['part', 'questionNumber', 'awardedMarks', 'maxMarks', 'confidence', 'concept', 'feedback'], properties: { part: { type: 'string' }, questionNumber: { type: 'string' }, awardedMarks: { type: ['number', 'null'] }, maxMarks: { type: ['number', 'null'] }, confidence: { type: 'number' }, concept: { type: 'string' }, feedback: { type: 'string' }, answered: { type: 'boolean' }, counted: { type: 'boolean' } } } }, totalMarks: { type: ['number', 'null'] }, maxMarks: { type: ['number', 'null'] }, confidence: { type: 'number' }, needsReview: { type: 'boolean' }, recommendation: { type: 'string' } } } }
+    students: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['fileName', 'studentName', 'rollNumber', 'questions', 'totalMarks', 'maxMarks', 'confidence', 'needsReview'], properties: { fileName: { type: 'string' }, studentName: { type: ['string', 'null'] }, rollNumber: { type: ['string', 'null'] }, questions: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['part', 'questionNumber', 'awardedMarks', 'maxMarks', 'confidence', 'concept', 'feedback'], properties: { part: { type: 'string' }, questionNumber: { type: 'string' }, awardedMarks: { type: ['number', 'null'] }, maxMarks: { type: ['number', 'null'] }, confidence: { type: 'number' }, concept: { type: 'string' }, feedback: { type: 'string' }, answered: { type: 'boolean' }, counted: { type: 'boolean' }, choiceGroupId: { type: ['string', 'null'] } } } }, totalMarks: { type: ['number', 'null'] }, maxMarks: { type: ['number', 'null'] }, confidence: { type: 'number' }, needsReview: { type: 'boolean' }, recommendation: { type: 'string' } } } }
   }
 };
 
@@ -146,6 +146,34 @@ function recommendationFor(student) {
   return `Review ${concepts.join(', ')}. Rework the missed questions step-by-step, then attempt a fresh practice set on these concepts.`;
 }
 
+function inferChoiceGroups(result) {
+  const questions = result.questionMap || [];
+  const pairs = new Map();
+  questions.forEach(question => {
+    const match = String(question.questionNumber || '').trim().match(/^(\d+)\s*[.\-]?\s*([ab])$/i);
+    if (!match) return;
+    const key = `${question.part || ''}|${match[1]}`;
+    const pair = pairs.get(key) || [];
+    pair.push({ question, suffix: match[2].toLowerCase() });
+    pairs.set(key, pair);
+  });
+  const selectionRules = Array.isArray(result.selectionRules) ? result.selectionRules : [];
+  pairs.forEach((pair, key) => {
+    const suffixes = new Set(pair.map(item => item.suffix));
+    if (pair.length !== 2 || !suffixes.has('a') || !suffixes.has('b')) return;
+    const [part, base] = key.split('|');
+    const ruleId = `${part || 'Part'}-${base}-choice`;
+    pair.forEach(item => {
+      item.question.choiceGroupId = ruleId;
+      item.question.choiceAllowedCount = 1;
+      item.question.isChoice = true;
+    });
+    if (!selectionRules.some(rule => rule.ruleId === ruleId)) selectionRules.push({ ruleId, part, instruction: `Answer either ${base}a or ${base}b`, chooseCount: 1, questionNumbers: pair.map(item => item.question.questionNumber) });
+  });
+  result.selectionRules = selectionRules;
+  return result;
+}
+
 function normalizePaper(result) {
   const declaredTotal = Number(result.paperTotalMarks);
   result.paperTotalMarks = Number.isFinite(declaredTotal) && declaredTotal > 0 && declaredTotal <= 100 ? declaredTotal : 100;
@@ -160,7 +188,7 @@ function normalizePaper(result) {
       question.isChoice = true;
     }
   });
-  return result;
+  return inferChoiceGroups(result);
 }
 
 function applyChoiceRules(student, result) {
@@ -178,7 +206,8 @@ function applyChoiceRules(student, result) {
       concept: question.concept || prior.concept || '',
       feedback: prior.feedback || 'No question-level feedback returned.',
       answered: prior.answered !== false && prior.awardedMarks !== null && prior.awardedMarks !== undefined,
-      counted: prior.counted !== false
+      counted: prior.counted !== false,
+      choiceGroupId: question.choiceGroupId || null
     };
   });
   const groups = new Map();
@@ -193,7 +222,7 @@ function applyChoiceRules(student, result) {
   groups.forEach(group => {
     group.items.sort((a, b) => (Number(b.question.awardedMarks) || -1) - (Number(a.question.awardedMarks) || -1));
     group.items.forEach((item, rank) => {
-      if (rank >= group.allowed && item.question.awardedMarks !== null) {
+      if (rank >= group.allowed) {
         item.question.awardedMarks = 0;
         item.question.counted = false;
         item.question.feedback = 'Alternative not counted because the question paper requires a limited number of choices from this group.';
@@ -236,14 +265,26 @@ function evaluationQuestions(records) {
   return [...map.values()];
 }
 
+function normalizeSavedRecords(records) {
+  let changed = false;
+  const normalized = records.map(record => {
+    const before = JSON.stringify(record);
+    normalizePaper(record);
+    record.students = (record.students || []).map(student => applyChoiceRules(student, record));
+    if (JSON.stringify(record) !== before) changed = true;
+    return record;
+  });
+  return { records: normalized, changed };
+}
+
 function cumulativeExcelHtml(records) {
   const questions = evaluationQuestions(records);
   const headers = questions.map(question => `<th>${escapeHtml(`${question.part} ${question.questionNumber} (${question.maxMarks ?? '—'})`)}</th>`).join('');
   const rows = records.flatMap(record => (record.students || []).map(student => {
-    const cells = questions.map(question => { const result = student.questions?.find(item => item.questionNumber === question.questionNumber && item.part === question.part); return `<td>${result?.counted === false ? '' : (result?.awardedMarks ?? '')}</td>`; }).join('');
+    const cells = questions.map(question => { const result = student.questions?.find(item => item.questionNumber === question.questionNumber && item.part === question.part); return `<td>${result?.counted === false ? 'NC' : (result?.awardedMarks ?? '')}</td>`; }).join('');
     return `<tr><td>${escapeHtml(record.id)}</td><td>${escapeHtml(record.approvedAt || record.createdAt || '')}</td><td>${escapeHtml(record.subject || '')}</td><td>${escapeHtml(student.studentName || '')}</td><td>${escapeHtml(student.rollNumber || '')}</td><td>${escapeHtml(student.fileName || '')}</td>${cells}<td>${student.totalMarks ?? ''}</td><td>${record.paperTotalMarks || 100}</td><td>${student.confidence ?? ''}</td><td>${escapeHtml(student.recommendation || recommendationFor(student))}</td></tr>`;
   })).join('');
-  return `<html><head><meta charset="UTF-8"><style>body{font-family:Arial;color:#172033}h2{color:#243b8f}table{border-collapse:collapse;font-size:11px}th,td{border:1px solid #cfd6e4;padding:6px;vertical-align:top}th{background:#eef2ff;color:#172033}td{mso-number-format:"@"}</style></head><body><h2>Answer Key Evaluation Records</h2><p>One cumulative record file. Scores are normalized to the uploaded paper total and never exceed 100.</p><table><tr><th>Evaluation ID</th><th>Approved at</th><th>Subject</th><th>Student name</th><th>Roll number</th><th>Source file</th>${headers}<th>Final marks</th><th>Paper total</th><th>Confidence</th><th>Recommendation</th></tr>${rows}</table></body></html>`;
+  return `<html><head><meta charset="UTF-8"><style>body{font-family:Arial;color:#172033}h2{color:#243b8f}table{border-collapse:collapse;font-size:11px}th,td{border:1px solid #cfd6e4;padding:6px;vertical-align:top}th{background:#eef2ff;color:#172033}td{mso-number-format:"@"}</style></head><body><h2>Answer Key Evaluation Records</h2><p>Scores follow the uploaded paper's mark split and never exceed the paper total. NC means an internal-choice alternative was not counted.</p><table><tr><th>Evaluation ID</th><th>Approved at</th><th>Subject</th><th>Student name</th><th>Roll number</th><th>Source file</th>${headers}<th>Final marks</th><th>Paper total</th><th>Confidence</th><th>Recommendation</th></tr>${rows}</table></body></html>`;
 }
 
 async function handleEvaluate(req, res) {
@@ -289,7 +330,15 @@ async function handleApprove(req, res, id) {
 }
 
 async function handleRecords(req, res) {
-  const records = JSON.parse(await fs.readFile(path.join(DATA, 'answer-key-records.json'), 'utf8').catch(() => '[]'));
+  const recordsPath = path.join(DATA, 'answer-key-records.json');
+  const loaded = JSON.parse(await fs.readFile(recordsPath, 'utf8').catch(() => '[]'));
+  const normalized = normalizeSavedRecords(Array.isArray(loaded) ? loaded : []);
+  const records = normalized.records;
+  if (normalized.changed) {
+    await fs.mkdir(path.join(DATA, 'approved'), { recursive: true });
+    await fs.writeFile(recordsPath, JSON.stringify(records, null, 2));
+    await fs.writeFile(path.join(DATA, 'approved', 'answer-key-evaluation-records.xls'), cumulativeExcelHtml(records));
+  }
   return json(res, 200, { records });
 }
 

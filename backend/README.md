@@ -17,4 +17,4 @@ Open `http://localhost:3000`. The backend serves the website, sends the question
 
 Approved records are also retained in `backend/data/answer-key-records.json` so the latest approved evaluation reloads into the dashboard after restarting the server. The cumulative Excel-compatible file includes evaluation ID, subject, student identity, every question mark, final marks, paper total, confidence, and recommendation.
 
-The current frontend file can still be opened directly, but the real backend flow requires the `http://localhost:3000` URL.
+The evaluator recognizes internal alternatives such as Part B `11a/11b`, `12a/12b`, and similar paired choices as separate choice groups. Only the highest-supported option in each group contributes to the final score; excluded alternatives are labeled `NC` in the report and Excel-compatible export. The current frontend file can still be opened directly, but the real backend flow requires the `http://localhost:3000` URL.

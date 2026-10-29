@@ -6,6 +6,7 @@ backend/server-*.log
 .env.*
 !.env.example
 node_modules/
+tmp/
 *.key
 *.pem
 *.p12
